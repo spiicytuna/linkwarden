@@ -63,21 +63,38 @@ export default async function autoDescribeLink(
   const prompt = generateDescriptionPrompt(contentToProcess.slice(0, sliceLimit), charCount); // slice to set length
 
   try {
-    const { object: description } = await generateObject({
-      model: getAIModel("description"),
+    const { model, modelName } = getAIModel("description");
+    const startTime = performance.now();
+
+    const result = await generateObject({
+      model: model,
       prompt: prompt,
       schema: z.string(),
     });
-  
+
+    const endTime = performance.now();
+
+    if (process.env.AI_STATS === "true") {
+      const durationInMs = endTime - startTime;
+      const durationInNano = durationInMs * 1_000_000;
+      const formattedTime = formatDuration(durationInNano);
+      // Use the dynamic modelName in the log
+      console.log(
+        `[AI Info] ${modelName} took ${formattedTime} to process the link for the description.`
+      );
+    }
+
+    const description = result.object;
+
     if (!description || description.trim().length === 0) {
       console.log(`[AutoDescribe] AI returned an empty description for link: ${link.url}`);
       return;
     }
-  
+
     const finalDescription = description.trim().substring(0, charCount);
-  
+
     console.log(`[AutoDescribe] Description for link: ${link.url} => "${finalDescription}"`);
-  
+
     // all good > update db
     await prisma.link.update({
       where: { id: linkId },
@@ -90,3 +107,4 @@ export default async function autoDescribeLink(
     console.log(`[AutoDescribe] Error describing link: ${link.url}`);
     console.log("Error: ", err);
   }
+}

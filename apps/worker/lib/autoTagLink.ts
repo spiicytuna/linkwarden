@@ -1,3 +1,4 @@
+import { performance } from "perf_hooks";
 import { AiDescriptionMethod, AiTaggingMethod, User } from "@linkwarden/prisma/client";
 import {
   existingTagsPrompt,
@@ -17,6 +18,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createOllama } from "ollama-ai-provider";
 import { titleCase } from "@linkwarden/lib";
+import { formatDuration } from "../../web/lib/utils";
 
 // Function to concat /api with the base URL properly
 const ensureValidURL = (base: string, path: string) =>
@@ -24,7 +26,7 @@ const ensureValidURL = (base: string, path: string) =>
 
 export const getAIModel = (
   modelType: "tagging" | "description"
-): LanguageModelV1 => {
+): { model: LanguageModelV1; modelName: string } => {
   // OpenAI
   if (process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL) {
     let config: OpenAICompatibleProviderSettings = {
@@ -34,7 +36,10 @@ export const getAIModel = (
       apiKey: process.env.OPENAI_API_KEY,
     };
     const openaiCompatibleModel = createOpenAICompatible(config);
-    return openaiCompatibleModel(process.env.OPENAI_MODEL);
+    return {
+      model: openaiCompatibleModel(process.env.OPENAI_MODEL),
+      modelName: `OpenAI: ${process.env.OPENAI_MODEL}`,
+    };
   }
   // Azure
   if (
@@ -42,27 +47,39 @@ export const getAIModel = (
     process.env.AZURE_RESOURCE_NAME &&
     process.env.AZURE_MODEL
   ) {
-    return azure(process.env.AZURE_MODEL);
+    return {
+      model: azure(process.env.AZURE_MODEL),
+      modelName: `Azure: ${process.env.AZURE_MODEL}`,
+    };
   }
   // Anthropic
   if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_MODEL) {
-    return anthropic(process.env.ANTHROPIC_MODEL);
+    return {
+      model: anthropic(process.env.ANTHROPIC_MODEL),
+      modelName: `Anthropic: ${process.env.ANTHROPIC_MODEL}`,
+    };
   }
   // Ollama - WITH YOUR TIMEOUT LOGIC PRESERVED
   if (process.env.NEXT_PUBLIC_OLLAMA_ENDPOINT_URL && process.env.OLLAMA_MODEL) {
     const browserTimeout = Number(process.env.BROWSER_TIMEOUT) || 0;
 
     const getTimeout = () => {
+      // fixed timeout for tagging
       if (modelType === "tagging") {
-        return 3 * 60 * 1000;
+        return 3 * 60 * 1000; // more than enough
       }
+
+      // console descriptions: batch can be slow esp on slower hardware
       const defaultDescriptionTimeout = 15;
       const finalTimeout = Math.max(defaultDescriptionTimeout, browserTimeout);
+
       if (browserTimeout > 0 && browserTimeout > defaultDescriptionTimeout) {
+        // process single link user configured
         console.log(
           `[AI Config] Processing description. Timeout increased to user-defined ${finalTimeout} minutes.`
         );
       } else {
+        // process batch or single default timeout
         console.log(
           `[AI Config] Processing description. Using default ${finalTimeout} minute timeout.`
         );
@@ -85,18 +102,27 @@ export const getAIModel = (
       },
     });
 
-    return ollama(modelToUse, { structuredOutputs: true });
+    return {
+      model: ollama(modelToUse, { structuredOutputs: true }),
+      modelName: `Ollama: ${modelToUse}`,
+    };
   }
   // OpenRouter
   if (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_MODEL) {
     const openrouter = createOpenRouter({
       apiKey: process.env.OPENROUTER_API_KEY,
     });
-    return openrouter(process.env.OPENROUTER_MODEL) as LanguageModelV1;
+    return {
+      model: openrouter(process.env.OPENROUTER_MODEL) as LanguageModelV1,
+      modelName: `OpenRouter: ${process.env.OPENROUTER_MODEL}`,
+    };
   }
   // Perplexity - NEW FROM UPSTREAM
   if (process.env.PERPLEXITY_API_KEY) {
-    return perplexity(process.env.PERPLEXITY_MODEL || "sonar-pro");
+    return {
+      model: perplexity(process.env.PERPLEXITY_MODEL || "sonar-pro"),
+      modelName: `Perplexity: ${process.env.PERPLEXITY_MODEL || "sonar-pro"}`,
+    };
   }
   throw new Error("No AI provider configured");
 };
@@ -161,39 +187,49 @@ export default async function autoTagLink(
   }
 
   try {
-    const { object: tags } = await generateObject({
-      model: getAIModel("tagging"),
+    const { model, modelName } = getAIModel("tagging");
+    const startTime = performance.now();
+    const result = await generateObject({
+      model: model,
       prompt: prompt,
       output: "array",
       schema: z.string(),
     });
+    const endTime = performance.now();
+
+    if (process.env.AI_STATS === "true") {
+      const durationInMs = endTime - startTime;
+      const durationInNano = durationInMs * 1_000_000;
+      const formattedTime = formatDuration(durationInNano);
+      console.log(
+        `[AI Info] ${modelName} took ${formattedTime} to process the link for tags.`
+      );
+    }
+    let tags = result.object;
 
     if (!tags || tags.length === 0) {
       return;
-    } 
-    
-    let processedTags = tags;
-    if (user.aiTaggingMethod === AiTaggingMethod.EXISTING) {
-      processedTags = tags.filter((tag: string) => existingTagsNames.includes(tag));
+    } else if (user.aiTaggingMethod === AiTaggingMethod.EXISTING) {
+      tags = tags.filter((tag: string) => existingTagsNames.includes(tag));
     } else if (user.aiTaggingMethod === AiTaggingMethod.PREDEFINED) {
-      processedTags = tags.filter((tag: string) => user.aiPredefinedTags.includes(tag));
+      tags = tags.filter((tag: string) => user.aiPredefinedTags.includes(tag));
     } else if (user.aiTaggingMethod === AiTaggingMethod.GENERATE) {
-      processedTags = tags.map((tag: string) =>
+      tags = tags.map((tag: string) =>
         tag.length > 3 ? titleCase(tag.toLowerCase()) : tag
       );
     }
 
-    console.log("Tags for link:", link.url, "=>", processedTags);
+    console.log("Tags for link:", link.url, "=>", tags);
 
-    if (processedTags.length > 5) {
-      processedTags = processedTags.slice(0, 5);
+    if (tags.length > 5) {
+      tags = tags.slice(0, 5);
     }
 
     await prisma.link.update({
       where: { id: linkId },
       data: {
         tags: {
-          connectOrCreate: processedTags.map((tag: string) => ({
+          connectOrCreate: tags.map((tag: string) => ({
             where: {
               name_ownerId: {
                 name: tag.trim().slice(0, 50),
@@ -207,7 +243,7 @@ export default async function autoTagLink(
                   id: user.id,
                 },
               },
-              aiGenerated: true,
+              aiGenerated: true, // NEW FROM UPSTREAM
             },
           })),
         },
