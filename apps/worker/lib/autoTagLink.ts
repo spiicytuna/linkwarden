@@ -1,4 +1,4 @@
-import { AiTaggingMethod, User } from "@linkwarden/prisma/client";
+import { AiDescriptionMethod, AiTaggingMethod, User } from "@linkwarden/prisma/client";
 import {
   existingTagsPrompt,
   generateTagsPrompt,
@@ -22,7 +22,10 @@ import { titleCase } from "@linkwarden/lib";
 const ensureValidURL = (base: string, path: string) =>
   `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 
-const getAIModel = (): LanguageModelV1 => {
+export const getAIModel = (
+  modelType: "tagging" | "description"
+): LanguageModelV1 => {
+  // OpenAI
   if (process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL) {
     let config: OpenAICompatibleProviderSettings = {
       baseURL:
@@ -30,38 +33,68 @@ const getAIModel = (): LanguageModelV1 => {
       name: process.env.CUSTOM_OPENAI_NAME || "openai",
       apiKey: process.env.OPENAI_API_KEY,
     };
-
     const openaiCompatibleModel = createOpenAICompatible(config);
-
     return openaiCompatibleModel(process.env.OPENAI_MODEL);
   }
+  // Azure
   if (
     process.env.AZURE_API_KEY &&
     process.env.AZURE_RESOURCE_NAME &&
     process.env.AZURE_MODEL
-  )
+  ) {
     return azure(process.env.AZURE_MODEL);
-  if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_MODEL)
+  }
+  // Anthropic
+  if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_MODEL) {
     return anthropic(process.env.ANTHROPIC_MODEL);
+  }
+  // Ollama - WITH YOUR TIMEOUT LOGIC PRESERVED
   if (process.env.NEXT_PUBLIC_OLLAMA_ENDPOINT_URL && process.env.OLLAMA_MODEL) {
+    const browserTimeout = Number(process.env.BROWSER_TIMEOUT) || 0;
+
+    const getTimeout = () => {
+      if (modelType === "tagging") {
+        return 3 * 60 * 1000;
+      }
+      const defaultDescriptionTimeout = 15;
+      const finalTimeout = Math.max(defaultDescriptionTimeout, browserTimeout);
+      if (browserTimeout > 0 && browserTimeout > defaultDescriptionTimeout) {
+        console.log(
+          `[AI Config] Processing description. Timeout increased to user-defined ${finalTimeout} minutes.`
+        );
+      } else {
+        console.log(
+          `[AI Config] Processing description. Using default ${finalTimeout} minute timeout.`
+        );
+      }
+      return finalTimeout * 60 * 1000;
+    };
+
+    const modelToUse =
+      modelType === "description" && process.env.OLLAMA_DESCRIPTION_MODEL
+        ? process.env.OLLAMA_DESCRIPTION_MODEL
+        : process.env.OLLAMA_MODEL;
+
     const ollama = createOllama({
       baseURL: ensureValidURL(
         process.env.NEXT_PUBLIC_OLLAMA_ENDPOINT_URL,
         "api"
       ),
+      fetchOptions: {
+        timeout: getTimeout(),
+      },
     });
 
-    return ollama(process.env.OLLAMA_MODEL, {
-      structuredOutputs: true,
-    });
+    return ollama(modelToUse, { structuredOutputs: true });
   }
+  // OpenRouter
   if (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_MODEL) {
     const openrouter = createOpenRouter({
       apiKey: process.env.OPENROUTER_API_KEY,
     });
-
     return openrouter(process.env.OPENROUTER_MODEL) as LanguageModelV1;
   }
+  // Perplexity - NEW FROM UPSTREAM
   if (process.env.PERPLEXITY_API_KEY) {
     return perplexity(process.env.PERPLEXITY_MODEL || "sonar-pro");
   }
@@ -86,7 +119,6 @@ export default async function autoTagLink(
   if (!description) return;
 
   let prompt;
-
   let existingTagsNames: string[] = [];
 
   if (user.aiTaggingMethod === AiTaggingMethod.EXISTING) {
@@ -128,39 +160,40 @@ export default async function autoTagLink(
     return console.log("No predefined tags to auto tag for link: ", link.url);
   }
 
-  const { object } = await generateObject({
-    model: getAIModel(),
-    prompt: prompt,
-    output: "array",
-    schema: z.string(),
-  });
-
   try {
-    let tags = object;
+    const { object: tags } = await generateObject({
+      model: getAIModel("tagging"),
+      prompt: prompt,
+      output: "array",
+      schema: z.string(),
+    });
 
     if (!tags || tags.length === 0) {
       return;
-    } else if (user.aiTaggingMethod === AiTaggingMethod.EXISTING) {
-      tags = tags.filter((tag: string) => existingTagsNames.includes(tag));
+    } 
+    
+    let processedTags = tags;
+    if (user.aiTaggingMethod === AiTaggingMethod.EXISTING) {
+      processedTags = tags.filter((tag: string) => existingTagsNames.includes(tag));
     } else if (user.aiTaggingMethod === AiTaggingMethod.PREDEFINED) {
-      tags = tags.filter((tag: string) => user.aiPredefinedTags.includes(tag));
+      processedTags = tags.filter((tag: string) => user.aiPredefinedTags.includes(tag));
     } else if (user.aiTaggingMethod === AiTaggingMethod.GENERATE) {
-      tags = tags.map((tag: string) =>
+      processedTags = tags.map((tag: string) =>
         tag.length > 3 ? titleCase(tag.toLowerCase()) : tag
       );
     }
 
-    console.log("Tags for link:", link.url, "=>", tags);
+    console.log("Tags for link:", link.url, "=>", processedTags);
 
-    if (tags.length > 5) {
-      tags = tags.slice(0, 5);
+    if (processedTags.length > 5) {
+      processedTags = processedTags.slice(0, 5);
     }
 
     await prisma.link.update({
       where: { id: linkId },
       data: {
         tags: {
-          connectOrCreate: tags.map((tag: string) => ({
+          connectOrCreate: processedTags.map((tag: string) => ({
             where: {
               name_ownerId: {
                 name: tag.trim().slice(0, 50),
