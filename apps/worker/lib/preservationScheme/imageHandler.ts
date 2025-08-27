@@ -4,34 +4,44 @@ import { createFile } from "@linkwarden/filesystem";
 import { generatePreview } from "../generatePreview";
 
 const imageHandler = async ({ url, id }: Link, extension: string) => {
-  const image = await fetch(url as string).then((res) => res.blob());
+  try { // TRY ADDED  //////////////////////////////////////////////////////////////////////////////////
+    const image = await fetch(url as string).then((res) => res.blob());
 
-  const buffer = Buffer.from(await image.arrayBuffer());
+    const buffer = Buffer.from(await image.arrayBuffer());
 
-  if (
-    Buffer.byteLength(buffer) >
-    1024 * 1024 * Number(process.env.SCREENSHOT_MAX_BUFFER || 100)
-  )
-    return console.log("Error archiving as Screenshot: Buffer size exceeded");
+    if (
+      Buffer.byteLength(buffer) >
+      1024 * 1024 * Number(process.env.SCREENSHOT_MAX_BUFFER || 100)
+    )
+      return console.log("Error archiving as Screenshot: Buffer size exceeded");
 
-  const linkExists = await prisma.link.findUnique({
-    where: { id },
-  });
-
-  if (linkExists) {
-    await generatePreview(buffer, linkExists.collectionId, id);
-
-    await createFile({
-      data: buffer,
-      filePath: `archives/${linkExists.collectionId}/${id}.${extension}`,
-    });
-
-    await prisma.link.update({
+    const linkExists = await prisma.link.findUnique({
       where: { id },
-      data: {
-        image: `archives/${linkExists.collectionId}/${id}.${extension}`,
-      },
     });
+
+    if (linkExists) {
+      await generatePreview(buffer, linkExists.collectionId, id);
+
+      await createFile({
+        data: buffer,
+        filePath: `archives/${linkExists.collectionId}/${id}.${extension}`,
+      });
+
+      await prisma.link.update({
+        where: { id },
+        data: {
+          image: `archives/${linkExists.collectionId}/${id}.${extension}`,
+        },
+      });
+    }
+  } catch (error: any) { // CATCH BLOCK  /////////////////////////////////////////////////////////
+    if (error.code === 'ERR_INVALID_PROTOCOL') {
+      console.warn(`[Image Handler] Skipped insecure http:// resource for link ${id}`);
+      return; // stop proc insecure images
+    }
+    // other errors = into the log for debug
+    console.error(`[Image Handler] Error for link ${id}:`, error);
+    throw error;
   }
 };
 

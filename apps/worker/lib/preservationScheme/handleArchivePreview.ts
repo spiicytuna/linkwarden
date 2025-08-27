@@ -21,30 +21,40 @@ const handleArchivePreview = async (
 
   let previewGenerated = false;
 
-  if (ogImageUrl) {
-    if (
-      !ogImageUrl.startsWith("http://") &&
-      !ogImageUrl.startsWith("https://")
-    ) {
-      const origin = await page.evaluate(() => document.location.origin);
-      ogImageUrl =
-        origin + (ogImageUrl.startsWith("/") ? ogImageUrl : "/" + ogImageUrl);
+  // TRY ADDED //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  try {
+    if (ogImageUrl) {
+      if (
+        !ogImageUrl.startsWith("http://") &&
+        !ogImageUrl.startsWith("https://")
+      ) {
+        const origin = await page.evaluate(() => document.location.origin);
+        ogImageUrl =
+          origin + (ogImageUrl.startsWith("/") ? ogImageUrl : "/" + ogImageUrl);
+      }
+
+      // the line that can fail and spit to docker logs/console //////////////////////////////////////////////////////////////////////////////
+      const imageResponse = await page.goto(ogImageUrl);
+
+      if (imageResponse && !link.preview?.startsWith("archive")) {
+        const buffer = await imageResponse.body();
+        previewGenerated = await generatePreview(
+          buffer,
+          link.collectionId,
+          link.id
+        );
+      }
+
+      await page.goBack();
     }
-
-    const imageResponse = await page.goto(ogImageUrl);
-
-    if (imageResponse && !link.preview?.startsWith("archive")) {
-      const buffer = await imageResponse.body();
-      previewGenerated = await generatePreview(
-        buffer,
-        link.collectionId,
-        link.id
-      );
-    }
-
-    await page.goBack();
+  } catch (error: any) {
+    console.warn(`[Preview Handler] Failed to fetch og:image for link ${link.id}: ${error.name}. Falling back to screenshot.`);
+    // Ensure we navigate back to the original page if the goto() failed
+    await page.goto(link.url as string, { waitUntil: "domcontentloaded" }).catch(() => {});
   }
+  // //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+  // now fallback = above block fails or nothing happens
   if (!previewGenerated && !link.preview?.startsWith("archive")) {
     await page
       .screenshot({ type: "jpeg", quality: 20 })

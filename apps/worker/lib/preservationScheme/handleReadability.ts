@@ -15,7 +15,11 @@ const handleReadability = async (
   const window = new JSDOM("").window;
   const purify = DOMPurify(window);
   const cleanedUpContent = purify.sanitize(content);
-  const dom = new JSDOM(cleanedUpContent, { url: link.url || "" });
+//  const dom = new JSDOM(cleanedUpContent, { url: link.url || "" });
+  const dom = new JSDOM(cleanedUpContent, {
+    url: link.url || "",
+    resources: "usable"
+  });
 
   const article = new Readability(dom.window.document).parse();
   const articleText = article?.textContent

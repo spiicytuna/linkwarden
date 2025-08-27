@@ -15,7 +15,7 @@ export default async function fetchHeaders(url: string) {
             process.env.IGNORE_UNAUTHORIZED_CA === "true" ? false : true,
         });
 
-    let fetchOpts = {
+    let fetchOpts: { method: string; agent: any } = { // Added type for clarity
       method: "HEAD",
       agent: httpsAgent,
     };
@@ -35,7 +35,7 @@ export default async function fetchHeaders(url: string) {
       };
     }
 
-    const responsePromise = fetch(url, fetchOpts);
+    const responsePromise = fetch(url, fetchOpts as any); // Use 'as any' to satisfy fetch types
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => {
@@ -46,8 +46,15 @@ export default async function fetchHeaders(url: string) {
     const response = await Promise.race([responsePromise, timeoutPromise]);
 
     return (response as Response)?.headers || null;
-  } catch (err) {
-    console.log(err);
+  } catch (err: any) { // ////////////////////////////////////////////////// CATCH BLOCK MODIFIED HERE
+    // protocol error without crashing
+    if (err.code === 'ERR_INVALID_PROTOCOL') {
+      console.warn(`[Fetch Headers] Skipped insecure http:// resource: ${url}`);
+      return null;
+    }
+    
+    // other errors remain same
+    console.log(`[Fetch Headers] Error for ${url}:`, err.name);
     return null;
   }
 }
