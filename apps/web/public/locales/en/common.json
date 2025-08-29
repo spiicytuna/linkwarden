@@ -538,5 +538,6 @@
   "ai_analyze_first_chars_desc": "Set how many characters to analyze for description generation.",
   "generate_descriptions_for_existing_links": "Generate descriptions for existing Links",
   "delete_unused_tags_desc": "Delete all tags with {{count}} or fewer links, applies to all users.",
-  "delete_unused_tags_confirm": "Are you sure you want to delete all tags with {{count}} or fewer links? This action is irreversible."
+  "delete_unused_tags_confirm": "Are you sure you want to delete all tags with {{count}} or fewer links? This action is irreversible.",
+  "copy_link_to_clipboard": "Copy link to clipboard"
 }
